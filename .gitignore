@@ -1,0 +1,23 @@
+# Claude artifacts
+docs/
+CLAUDE.md
+.claude/
+
+# Git worktrees
+.worktrees/
+
+# Build artifacts
+build/
+DerivedData/
+tools/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Tests (excluded from v1.0)
+FineTuneTests/
+FineTuneUITests/
+__Snapshots__/
+
+# macOS
+.DS_Store
+*.swp
