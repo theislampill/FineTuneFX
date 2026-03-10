@@ -50,7 +50,7 @@ struct FXSpectrumView: NSViewRepresentable {
 final class SpectrumCoordinator {
 
     static let numBands    = 10
-    static let barsPerBand = 4          // must be even for symmetric mirroring
+    static let barsPerBand = 10         // FxSound uses 10 history bars per band
     static let totalBars   = numBands * barsPerBand
 
     // bandGraph: [band 0 bar0..bar3, band 1 bar0..bar3, … band 9 bar0..bar3]
@@ -193,10 +193,12 @@ final class SpectrumNSView: NSView {
 
         for i in 0..<n {
             let raw = bandGraph[i]
-            // Boost and power-curve the level so it fills the cell like FxSound.
-            // The resonant filter output is naturally in 0.01–0.15 for loud audio;
-            // a sqrt expand + 8× scale maps that to a good display range.
-            let boosted = min(1.0, CGFloat(sqrtf(raw)) * 5.9)
+            // Livelier at low levels, but with soft-knee compression so peaks
+            // don't pin at full height constantly.
+            let floor: CGFloat = 0.01
+            let level = max(0, CGFloat(raw) - floor)
+            let lifted = pow(level, 0.55)
+            let boosted = min(1.0, 1.0 - exp(-3.0 * lifted))
             let halfH   = max(1.5, boosted * midY * 0.95)
             let x     = CGFloat(i) * (barW + gap)
             let rect  = CGRect(x: x, y: midY - halfH, width: barW, height: halfH * 2)
