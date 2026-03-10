@@ -1,6 +1,9 @@
 <p align="center">
   <img src="assets/icon.png" width="128" height="128" alt="FineTune app icon">
 </p>
+<p align="center">
+  <strong>Precision audio management for macOS</strong>
+</p>
 
 <h1 align="center">FineTuneFX</h1>
 <img width="583" height="652" alt="image" src="https://github.com/user-attachments/assets/c054151c-fddd-493d-8abc-77fcd940b7ef" />
@@ -8,9 +11,7 @@
 
 
 
-<p align="center">
-  <strong>Per-app volume control for macOS</strong>
-</p>
+
 ## Features
 
 - **Per-app volume** — Individual sliders and mute for each application
