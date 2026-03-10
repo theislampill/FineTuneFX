@@ -17,9 +17,9 @@
 - **Multi-device output** — Route audio to multiple devices simultaneously
 - **SW Volume control for devices w/o HW control** — Monitor and adjust volume levels of devices w/o hardware mgmt, via SW
 - **Input device control** — Monitor and adjust microphone levels
-- **Sound Enhancements** — Clarity, Ambience, Surround Sound, Dynamic Boost, Bass Boost
+- **Sound Enhancements** — Per-device and system-wide Clarity, Ambience, Surround Sound, Dynamic Boost, Bass Boost with stackable layering
+- **Variable 9-band system-wide EQ** — 13 presets, stackable per-device
 - **Fixed 10-band per app EQ** — 20 presets across 5 categories
-- **Variable 9-band system-wide EQ** — 13 presets
 - **Visualiser** — Sound activity monitor
 - **Pinned apps** — Pre-configure apps before they play
 - **Audio routing** — Send apps to different outputs or follow system default
