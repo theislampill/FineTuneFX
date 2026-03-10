@@ -26,6 +26,20 @@ struct FXSettings: Codable, Equatable {
     // Per-band gain (dB ±12) — set by dragging dots on the curve
     var eqGains: [Float]  = Array(repeating: 0, count: 9)
 
+    /// Returns a new FXSettings that stacks `other` on top of `self`.
+    /// Parameters are summed with no upper cap — the caller intends to layer both.
+    /// EQ freqs come from self (per-device freqs take priority over system freqs).
+    func stacked(with other: FXSettings) -> FXSettings {
+        var result = self
+        result.clarity       = clarity       + other.clarity
+        result.ambience      = ambience      + other.ambience
+        result.surroundSound = surroundSound + other.surroundSound
+        result.dynamicBoost  = dynamicBoost  + other.dynamicBoost
+        result.bassBoost     = bassBoost     + other.bassBoost
+        result.eqGains       = zip(eqGains, other.eqGains).map { $0 + $1 }
+        return result
+    }
+
     func matchingPreset() -> FXPreset? {
         FXPreset.allCases.first { p in
             let s = p.settings

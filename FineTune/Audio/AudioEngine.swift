@@ -560,12 +560,20 @@ final class AudioEngine {
     /// Returns the FX settings that should be active on a given tap.
     /// Uses the first device UID that has its own persisted slot; falls back to System Audio.
     private func fxSettingsForTap(_ tap: ProcessTapController) -> FXSettings {
+        // System Audio slot — follows the default device, acts as a base layer.
+        let systemFX = settingsManager.getFXSettings(for: nil)
+
+        // Per-device FX — stacked on top of the system layer.
+        // If the tap spans multiple devices (aggregate), use the first that has saved settings.
         for uid in tap.currentDeviceUIDs {
             if settingsManager.hasFXSettings(for: uid) {
-                return settingsManager.getFXSettings(for: uid)
+                let deviceFX = settingsManager.getFXSettings(for: uid)
+                return systemFX.stacked(with: deviceFX)
             }
         }
-        return settingsManager.getFXSettings(for: nil)
+
+        // No per-device FX saved — apply system layer only.
+        return systemFX
     }
 
     // MARK: - FX Device Routing
