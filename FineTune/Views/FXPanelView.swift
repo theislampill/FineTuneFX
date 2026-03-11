@@ -214,7 +214,6 @@ private struct FXSystemPanel: View {
     @State private var selectedPreset: FXPreset? = .general
     @State private var isDirty: Bool = false
     @State private var fxAreaHovered = false
-    @AppStorage("lastFXPresetID") private var savedPresetID: String = FXPreset.general.rawValue
 
     init(settings: FXSettings,
          fxEditingUID: String?,
@@ -250,20 +249,30 @@ private struct FXSystemPanel: View {
         self.fxEditingUID         = fxEditingUID
         _local = State(initialValue: settings)
 
-        // Restore preset and dirty state from persistence.
+        let targetKey = fxEditingUID ?? "__system__"
+        let presetIDKey = "lastFXPresetID.\(targetKey)"
+        let presetDirtyKey = "lastFXPresetDirty.\(targetKey)"
+
+        // Restore preset and dirty state from persistence (scoped per editing target).
         // isDirty is NEVER forced true here — only user interaction (markDirtyAndEmit)
         // sets it. This prevents the asterisk appearing on tab-return without edits.
         if let match = settings.matchingPreset() {
             _selectedPreset = State(initialValue: match)
             _isDirty = State(initialValue: false)
+            UserDefaults.standard.set(match.rawValue, forKey: presetIDKey)
+            UserDefaults.standard.set(false, forKey: presetDirtyKey)
         } else {
-            let savedID    = UserDefaults.standard.string(forKey: "lastFXPresetID") ?? FXPreset.general.rawValue
-            let savedDirty = UserDefaults.standard.bool(forKey: "lastFXPresetDirty")
+            let savedID    = UserDefaults.standard.string(forKey: presetIDKey) ?? FXPreset.general.rawValue
+            let savedDirty = UserDefaults.standard.bool(forKey: presetDirtyKey)
             let restored   = FXPreset(rawValue: savedID) ?? .general
             _selectedPreset = State(initialValue: restored)
             _isDirty = State(initialValue: savedDirty)
         }
     }
+
+    private var presetScopeKey: String { fxEditingUID ?? "__system__" }
+    private var presetIDKey: String { "lastFXPresetID.\(presetScopeKey)" }
+    private var presetDirtyKey: String { "lastFXPresetDirty.\(presetScopeKey)" }
 
     private var presetLabel: String {
         guard let p = selectedPreset else { return "General" }
@@ -278,9 +287,8 @@ private struct FXSystemPanel: View {
                     FXPresetDropdown(label: presetLabel) { preset in
                         selectedPreset = preset
                         isDirty = false
-                        UserDefaults.standard.set(false,       forKey: "lastFXPresetDirty")
-                        UserDefaults.standard.set(preset.rawValue, forKey: "lastFXPresetID")
-                        savedPresetID = preset.rawValue
+                        UserDefaults.standard.set(false, forKey: presetDirtyKey)
+                        UserDefaults.standard.set(preset.rawValue, forKey: presetIDKey)
                         local = preset.settings
                         onSettingsChanged(local)
                     }
@@ -398,8 +406,8 @@ private struct FXSystemPanel: View {
             if let m = v.matchingPreset() {
                 selectedPreset = m
                 isDirty = false
-                UserDefaults.standard.set(false, forKey: "lastFXPresetDirty")
-                UserDefaults.standard.set(m.rawValue, forKey: "lastFXPresetID")
+                UserDefaults.standard.set(false, forKey: presetDirtyKey)
+                UserDefaults.standard.set(m.rawValue, forKey: presetIDKey)
             }
         }
         // Also trigger when the editing target switches — covers the case where two devices
@@ -412,11 +420,13 @@ private struct FXSystemPanel: View {
             if let m = current.matchingPreset() {
                 selectedPreset = m
                 isDirty = false
-                UserDefaults.standard.set(false, forKey: "lastFXPresetDirty")
-                UserDefaults.standard.set(m.rawValue, forKey: "lastFXPresetID")
+                UserDefaults.standard.set(false, forKey: presetDirtyKey)
+                UserDefaults.standard.set(m.rawValue, forKey: presetIDKey)
             } else {
-                // Restore saved dirty state for this new device's settings
-                let savedDirty = UserDefaults.standard.bool(forKey: "lastFXPresetDirty")
+                let savedID = UserDefaults.standard.string(forKey: presetIDKey) ?? FXPreset.general.rawValue
+                selectedPreset = FXPreset(rawValue: savedID) ?? .general
+                // Restore saved dirty state for this target's settings
+                let savedDirty = UserDefaults.standard.bool(forKey: presetDirtyKey)
                 isDirty = savedDirty
             }
         }
@@ -436,8 +446,9 @@ private struct FXSystemPanel: View {
 
     private func markDirtyAndEmit() {
         isDirty = true
-        UserDefaults.standard.set(true,           forKey: "lastFXPresetDirty")
-        UserDefaults.standard.set(savedPresetID,  forKey: "lastFXPresetID")
+        let presetID = selectedPreset?.rawValue ?? FXPreset.general.rawValue
+        UserDefaults.standard.set(true, forKey: presetDirtyKey)
+        UserDefaults.standard.set(presetID, forKey: presetIDKey)
         onSettingsChanged(local)
     }
 }
