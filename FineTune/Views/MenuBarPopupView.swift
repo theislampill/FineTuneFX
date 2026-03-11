@@ -278,6 +278,8 @@ struct MenuBarPopupView: View {
         FXPanelView(
             settings: audioEngine.fxSettingsForEditing,
             onSettingsChanged: { audioEngine.setFXSettings($0) },
+            isFXPowerEnabled: audioEngine.isFXEnabled(),
+            onFXPowerToggled: { audioEngine.setFXEnabled($0) },
             outputDevices: audioEngine.prioritySortedOutputDevices,
             defaultDeviceUID: audioEngine.deviceVolumeMonitor.defaultDeviceUID,
             fxDeviceMode: audioEngine.fxDeviceMode,
@@ -568,6 +570,7 @@ struct MenuBarPopupView: View {
                 }
             } else {
                 ForEach(sortedDevices) { device in
+                    let fxEnabled = audioEngine.isFXEnabled()
                     DeviceRow(
                         device: device,
                         isDefault: device.id == deviceVolumeMonitor.defaultDeviceID,
@@ -592,8 +595,26 @@ struct MenuBarPopupView: View {
                         onSoftwareMuteToggle: {
                             let currentMute = audioEngine.getSoftwareMute(for: device)
                             audioEngine.setSoftwareMute(for: device, to: !currentMute)
-                        }
+                        },
+                        trailingAccessoryPadding: fxEnabled ? 52 : 0
                     )
+                    .overlay(alignment: .trailing) {
+                        if fxEnabled {
+                            FXDeviceTab(
+                                isActive: !audioEngine.isFXAtDefaultPreset(forDeviceUID: device.uid),
+                                onLeftClick: {
+                                    audioEngine.setFXDevice(device.uid)
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                                        activeTab = .fx
+                                    }
+                                },
+                                onRightClick: {
+                                    audioEngine.resetFXForDevice(device.uid)
+                                }
+                            )
+                            .padding(.trailing, 6)
+                        }
+                    }
                 }
             }
         }

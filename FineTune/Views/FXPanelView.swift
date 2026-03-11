@@ -6,6 +6,8 @@ import SwiftUI
 struct FXPanelView: View {
     let settings: FXSettings
     let onSettingsChanged: (FXSettings) -> Void
+    let isFXPowerEnabled: Bool
+    let onFXPowerToggled: (Bool) -> Void
 
     // FX device routing
     let outputDevices:        [AudioDevice]
@@ -31,6 +33,8 @@ struct FXPanelView: View {
 
     init(settings: FXSettings,
          onSettingsChanged: @escaping (FXSettings) -> Void,
+         isFXPowerEnabled: Bool,
+         onFXPowerToggled: @escaping (Bool) -> Void,
          outputDevices: [AudioDevice],
          defaultDeviceUID: String?,
          fxDeviceMode: DeviceSelectionMode,
@@ -47,6 +51,8 @@ struct FXPanelView: View {
          audioEngine: AudioEngine) {
         self.settings             = settings
         self.onSettingsChanged    = onSettingsChanged
+        self.isFXPowerEnabled     = isFXPowerEnabled
+        self.onFXPowerToggled     = onFXPowerToggled
         self.outputDevices        = outputDevices
         self.defaultDeviceUID     = defaultDeviceUID
         self.fxDeviceMode         = fxDeviceMode
@@ -79,6 +85,8 @@ struct FXPanelView: View {
                     settings: settings,
                     fxEditingUID: audioEngine.fxEditingUID,
                     onSettingsChanged: onSettingsChanged,
+                    isFXPowerEnabled: isFXPowerEnabled,
+                    onFXPowerToggled: onFXPowerToggled,
                     outputDevices: outputDevices,
                     defaultDeviceUID: defaultDeviceUID,
                     fxDeviceMode: fxDeviceMode,
@@ -173,6 +181,8 @@ private struct FXSeparator: View {
 private struct FXSystemPanel: View {
     let settings: FXSettings
     let onSettingsChanged: (FXSettings) -> Void
+    let isFXPowerEnabled: Bool
+    let onFXPowerToggled: (Bool) -> Void
     let audioEngine: AudioEngine
 
     // Used to detect device-picker switches even when the settings value is identical
@@ -196,7 +206,7 @@ private struct FXSystemPanel: View {
     /// the current theme at render time, not at NSViewRepresentable callback time.
     private var accentRGB: (CGFloat, CGFloat, CGFloat) {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
-        (NSColor(theme.accentColor).usingColorSpace(.sRGB) ?? .systemBlue)
+        (NSColor(theme.primaryColor).usingColorSpace(.sRGB) ?? .systemBlue)
             .getRed(&r, green: &g, blue: &b, alpha: nil)
         return (r, g, b)
     }
@@ -206,7 +216,11 @@ private struct FXSystemPanel: View {
     @State private var fxAreaHovered = false
     @AppStorage("lastFXPresetID") private var savedPresetID: String = FXPreset.general.rawValue
 
-    init(settings: FXSettings, fxEditingUID: String?, onSettingsChanged: @escaping (FXSettings) -> Void,
+    init(settings: FXSettings,
+         fxEditingUID: String?,
+         onSettingsChanged: @escaping (FXSettings) -> Void,
+         isFXPowerEnabled: Bool,
+         onFXPowerToggled: @escaping (Bool) -> Void,
          outputDevices: [AudioDevice],
          defaultDeviceUID: String?,
          fxDeviceMode: DeviceSelectionMode,
@@ -220,6 +234,8 @@ private struct FXSystemPanel: View {
          audioEngine: AudioEngine) {
         self.settings             = settings
         self.onSettingsChanged    = onSettingsChanged
+        self.isFXPowerEnabled     = isFXPowerEnabled
+        self.onFXPowerToggled     = onFXPowerToggled
         self.outputDevices        = outputDevices
         self.defaultDeviceUID     = defaultDeviceUID
         self.fxDeviceMode         = fxDeviceMode
@@ -285,28 +301,27 @@ private struct FXSystemPanel: View {
                     )
                     // Power button — solid accent fill when on, hollow ring when off
                     Button {
-                        local.isEnabled.toggle()
-                        onSettingsChanged(local)
+                        onFXPowerToggled(!isFXPowerEnabled)
                     } label: {
                         ZStack {
                             Circle()
-                                .fill(local.isEnabled ? theme.accentColor : Color.clear)
+                                .fill(isFXPowerEnabled ? theme.primaryColor : Color.clear)
                                 .frame(width: 26, height: 26)
                             Circle()
-                                .strokeBorder(local.isEnabled
-                                              ? theme.accentColor
+                                .strokeBorder(isFXPowerEnabled
+                                              ? theme.primaryColor
                                               : DesignTokens.Colors.textSecondary,
                                               lineWidth: 1.5)
                                 .frame(width: 26, height: 26)
                             Image(systemName: "power")
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(local.isEnabled ? .black.opacity(0.85)
+                                .foregroundStyle(isFXPowerEnabled ? .black.opacity(0.85)
                                                                  : DesignTokens.Colors.textSecondary)
                         }
                     }
                     .buttonStyle(.plain)
-                    .help(local.isEnabled ? "Disable FX" : "Enable FX")
-                    .animation(.easeInOut(duration: 0.15), value: local.isEnabled)
+                    .help(isFXPowerEnabled ? "Disable FX" : "Enable FX")
+                    .animation(.easeInOut(duration: 0.15), value: isFXPowerEnabled)
                 }
                 .frame(height: DesignTokens.Dimensions.rowContentHeight)
             } expandedContent: { EmptyView() }
@@ -315,7 +330,7 @@ private struct FXSystemPanel: View {
 
             // ── Cell 2: Spectrum Visualizer ──────────────────────────────
             ExpandableGlassRow(isExpanded: false) {
-                FXSpectrumView(isEnabled: local.isEnabled,
+                FXSpectrumView(isEnabled: isFXPowerEnabled,
                                audioEngine: audioEngine,
                                accentR: accentRGB.0,
                                accentG: accentRGB.1,
@@ -346,8 +361,8 @@ private struct FXSystemPanel: View {
                 .padding(.vertical, 4)
                 .onHover { fxAreaHovered = $0 }
             } expandedContent: { EmptyView() }
-            .saturation(local.isEnabled ? 1 : 0).opacity(local.isEnabled ? 1 : 0.55)
-            .disabled(!local.isEnabled)
+            .saturation(isFXPowerEnabled ? 1 : 0).opacity(isFXPowerEnabled ? 1 : 0.55)
+            .disabled(!isFXPowerEnabled)
 
             FXSeparator()
 
@@ -358,21 +373,25 @@ private struct FXSystemPanel: View {
                         get: { local.eqGains },
                         set: { local.eqGains = $0; markDirtyAndEmit() }
                     ))
-                    .frame(height: 90)
+                    .frame(height: 84)
                     .padding(.horizontal, 4)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(theme.separatorAccentColor.opacity(0.45), lineWidth: 0.8)
+                    )
 
                     FXDialRow(freqs: Binding(
                         get: { local.eqFreqs },
                         set: { local.eqFreqs = $0; markDirtyAndEmit() }
                     ))
-                    .padding(.top, 4)
+                    .padding(.top, 10)
                     .padding(.horizontal, 4)
                 }
                 .padding(.vertical, 4)
             } expandedContent: { EmptyView() }
-            .saturation(local.isEnabled ? 1 : 0).opacity(local.isEnabled ? 1 : 0.55)
-            .disabled(!local.isEnabled)
+            .saturation(isFXPowerEnabled ? 1 : 0).opacity(isFXPowerEnabled ? 1 : 0.55)
+            .disabled(!isFXPowerEnabled)
         }
         .onChange(of: settings) { _, v in
             local = v
@@ -554,6 +573,7 @@ private struct FXAppRow: View {
 private struct FXPresetDropdown: View {
     let label: String
     let onSelect: (FXPreset) -> Void
+    @Environment(ThemeManager.self) private var theme
 
     var body: some View {
         Menu {
@@ -561,21 +581,26 @@ private struct FXPresetDropdown: View {
                 Button(preset.name) { onSelect(preset) }
             }
         } label: {
-            Text(label)
-                .font(DesignTokens.Typography.pickerText)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .frame(width: 200, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(Color.primary.opacity(0.08))
-                        .overlay(RoundedRectangle(cornerRadius: 7)
-                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
-                )
+            HStack(spacing: 0) {
+                Text(label)
+                    .font(DesignTokens.Typography.pickerText)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(width: 200, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(theme.separatorAccentColor.opacity(0.42))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(theme.primaryColor.opacity(0.55), lineWidth: 1.0)
+                    )
+            )
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.automatic)
         .fixedSize()
     }
 }
@@ -609,7 +634,7 @@ private struct FXSliderRow: View {
                 let thumbX = (thumbR + frac * (trackW - thumbR * 2))
                     .clamped(thumbR, trackW - thumbR)
                 let labelCx = thumbX + thumbR + valueGap + 7
-                let accent  = theme.accentColor
+                let accent  = theme.primaryColor
 
                 ZStack(alignment: .leading) {
                     Capsule()
@@ -682,14 +707,17 @@ private struct FXEQCurve: View {
     var body: some View {
         GeometryReader { geo in
             let size = geo.size
-            let accent = theme.accentColor
+            let accent = theme.primaryColor
             let isDark = colorScheme == .dark
             // In light lo-contrast the pastel background makes faint lines invisible — boost opacity
             let lightLC = !isDark && !theme.isHiContrast
-            let gridColor    = isDark ? Color.white.opacity(0.07) : Color.black.opacity(lightLC ? 0.22 : 0.10)
-            let midlineColor = isDark ? Color.white.opacity(0.18) : Color.black.opacity(lightLC ? 0.35 : 0.20)
+            let gridColor    = isDark ? Color.white.opacity(0.12) : Color.black.opacity(lightLC ? 0.28 : 0.14)
+            let midlineColor = isDark ? Color.white.opacity(0.24) : Color.black.opacity(lightLC ? 0.40 : 0.24)
             let labelColor = isDark ? Color.white.opacity(0.65) : Color.black.opacity(0.65)
             let labelActiveColor = isDark ? Color.white : Color.black
+            let canvasBackground = isDark
+                ? Color.black.opacity(theme.isHiContrast ? 0.30 : 0.24)
+                : Color.white.opacity(lightLC ? 0.24 : 0.18)
 
             Canvas { ctx, sz in
                 let midY = labelH + (sz.height - labelH) * 0.5
@@ -724,7 +752,7 @@ private struct FXEQCurve: View {
                 // Gradient fill — extends to full width at the edge dot heights
                 // Left: horizontal run from x=0 at pts[0].y; right: run to x=width at pts[n-1].y
                 let maxGain = gains.map { abs($0) }.max() ?? 0
-                let fillOp  = Double(0.25 + (maxGain / 12.0) * 0.40)
+                let fillOp  = Double(0.33 + (maxGain / 12.0) * 0.38)
                 var fill = Path()
                 fill.move(to: CGPoint(x: 0, y: sz.height))
                 fill.addLine(to: CGPoint(x: 0, y: pts[0].y))          // left edge at first gain
@@ -759,7 +787,7 @@ private struct FXEQCurve: View {
                 }
                 line.addLine(to: CGPoint(x: sz.width, y: pts[n-1].y))
                 ctx.stroke(line, with: .color(accent),
-                           style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                           style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
 
                 // Dots + labels
                 for i in 0..<n {
@@ -790,7 +818,7 @@ private struct FXEQCurve: View {
                     }
                 }
             }
-            .background(Color.primary.opacity(0.08))
+            .background(canvasBackground)
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { drag in
                     if draggingBand == -1 {
@@ -917,7 +945,7 @@ private struct FXFreqDial: View {
                 let center = CGPoint(x: cx, y: cy)
 
                 Canvas { ctx, canvSz in
-                    let accent = theme.accentColor
+                    let accent = theme.primaryColor
                     let isDark = colorScheme == .dark
                     let r  = min(canvSz.width, canvSz.height) / 2 - 1.5
                     let center = CGPoint(x: canvSz.width / 2, y: canvSz.height / 2)

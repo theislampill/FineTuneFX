@@ -95,6 +95,8 @@ final class SettingsManager {
 
         // FX settings — "System Audio" slot (follow default)
         var fxSettings: FXSettings = FXSettings()
+        // Global FX power toggle (applies to all device/system FX processing)
+        var fxGlobalEnabled: Bool = true
 
         // Per-device FX settings — keyed by device UID
         var fxSettingsPerDevice: [String: FXSettings] = [:]
@@ -180,6 +182,13 @@ final class SettingsManager {
     func setFXSettings(_ s: FXSettings, for uid: String? = nil) {
         if let uid { settings.fxSettingsPerDevice[uid] = s }
         else        { settings.fxSettings = s }
+        scheduleSave()
+    }
+
+    func isFXGlobalEnabled() -> Bool { settings.fxGlobalEnabled }
+
+    func setFXGlobalEnabled(_ enabled: Bool) {
+        settings.fxGlobalEnabled = enabled
         scheduleSave()
     }
 

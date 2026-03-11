@@ -798,7 +798,7 @@ private struct ColorPalettePresetSection: View {
                 HStack(spacing: 10) {
                     PaletteTargetSwatch(
                         label: "Accent",
-                        fill: theme.accentColor,
+                        fill: theme.separatorAccentColor,
                         active: editTarget == .accent
                     ) { onSelectTarget(.accent) }
                     PaletteTargetSwatch(

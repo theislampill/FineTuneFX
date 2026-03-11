@@ -8,7 +8,7 @@
 //   • BARS_PER_BAND history bars per band, mirrored symmetrically about the
 //     band centre. Current value appears at centre and scrolls outward —
 //     this is the "vibrant shuffling" effect in FxSound.
-//   • Total bars on screen = NUM_BANDS × BARS_PER_BAND = 10 × 4 = 40.
+//   • Total bars on screen = NUM_BANDS × BARS_PER_BAND = 10 × 10 = 100.
 //   • Gradient fill: accent colour bright at top/bottom, dimmer at mid (FxSound gloss).
 //   • ~30 fps via CVDisplayLink (matches FxSound's VBlank target).
 
@@ -50,7 +50,7 @@ struct FXSpectrumView: NSViewRepresentable {
 final class SpectrumCoordinator {
 
     static let numBands    = 10
-    static let barsPerBand = 10         // FxSound uses 10 history bars per band
+    static let barsPerBand = 10         // FxSound NUM_BARS
     static let totalBars   = numBands * barsPerBand
 
     // bandGraph: [band 0 bar0..bar3, band 1 bar0..bar3, … band 9 bar0..bar3]
@@ -108,44 +108,37 @@ final class SpectrumCoordinator {
         guard !frameSkip else { return }   // ~30 fps
 
         guard let eng = engine else { return }
-        let rawBands = fetchBands(from: eng)   // [Float] × 10 (main-actor read)
+        let rawBands = eng.spectrumBandLevels   // [Float] × 10
 
-        let N = Self.barsPerBand   // 4
-        let half = N / 2           // 2
+        let N = Self.barsPerBand
+        let half = N / 2
 
-        // FxSound scrolling-history update, adapted for BARS_PER_BAND bars per band:
-        // Within each group of N bars, scroll outward from centre symmetrically.
-        // Centre position = N/2 (holds the newest value).
-        // Each frame: shift everything one step outward, insert new value at centre.
-        for band in 0..<Self.numBands {
-            let base = band * N
-            let newVal = rawBands[band]
+        // FxSound scrolling-history update:
+        // shift each half outward and insert newest sample at center.
+            for band in 0..<Self.numBands {
+                let base = band * N
+                let inVal = rawBands[band]
+                let newVal: Float
+                if inVal.isNaN || !inVal.isFinite {
+                    newVal = 0
+                } else {
+                    newVal = min(1, max(0, inVal))
+                }
 
-            // Shift: position j ← position j+1  (for left half 0…half-2)
-            // Mirror: position (N-1-j) ← position j+1  (right half mirrors left)
-            for j in 0..<(half - 1) {
+            for j in 0..<half {
                 let src = bandGraph[base + j + 1]
                 bandGraph[base + j]         = src
                 bandGraph[base + N - 1 - j] = src
             }
-            // Insert current value at both centre positions (half-1 and half)
-            bandGraph[base + half - 1] = newVal
-            bandGraph[base + half]     = newVal
+            bandGraph[base + half] = newVal
         }
 
-        let snap   = bandGraph
+        let snap = bandGraph
         let r = cr; let g = cg; let b = cb
         let en = enabled
         DispatchQueue.main.async { [weak view] in
             view?.refresh(bandGraph: snap, r: r, g: g, b: b, enabled: en)
         }
-    }
-
-    private func fetchBands(from engine: AudioEngine) -> [Float] {
-        if Thread.isMainThread { return engine.spectrumBandLevels }
-        var bands: [Float] = []
-        DispatchQueue.main.sync { bands = engine.spectrumBandLevels }
-        return bands
     }
 }
 
@@ -156,7 +149,7 @@ final class SpectrumNSView: NSView {
     private var bandGraph = [Float](repeating: 0, count: SpectrumCoordinator.totalBars)
     private var r: CGFloat = 0; private var g: CGFloat = 0; private var b: CGFloat = 0
     private var enabled = true
-    private var isConfigured = false  // skip draw until refresh() called with real colour
+    private var isConfigured = false
 
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { false }
@@ -170,7 +163,8 @@ final class SpectrumNSView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard isConfigured else { return }  // don't draw until real colour is set
+        // Prevent initial flash with fallback/default color before theme color arrives.
+        guard isConfigured else { return }
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let W = bounds.width
         let H = bounds.height
@@ -192,12 +186,16 @@ final class SpectrumNSView: NSView {
         let midCol = base.withAlphaComponent(0.45).cgColor
 
         for i in 0..<n {
-            let raw = bandGraph[i]
-            // FxSound-style linear scaling (their visualizer uses height = band_value * 100).
-            // Our band values tend to sit ~0.01–0.16 for loud audio, so scale up.
-            let v = max(0.01, CGFloat(raw))
-            let boosted = min(1.0, v * 6.2)
-            let halfH   = max(1.5, boosted * midY)
+            let raw = bandGraph[i] == 0 ? 0.01 : bandGraph[i]
+            // Livelier at low levels, but with soft-knee compression so peaks
+            // don't pin at full height constantly.
+            let floor: CGFloat = 0.002
+            let level = max(0, CGFloat(raw) - floor)
+            // Stronger overall motion across low/medium/high content.
+            let driven = min(1.0, level * 4.6)
+            let lifted = pow(driven, 0.43)
+            let boosted = min(1.0, 1.0 - exp(-8.2 * lifted))
+            let halfH   = max(2.0, boosted * midY * 0.93)
             let x     = CGFloat(i) * (barW + gap)
             let rect  = CGRect(x: x, y: midY - halfH, width: barW, height: halfH * 2)
 

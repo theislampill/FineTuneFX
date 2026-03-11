@@ -15,6 +15,8 @@ final class AudioEngine {
 
     // Global FX settings — stored property so @Observable tracks changes
     var fxSettings: FXSettings = FXSettings()
+    // Master FX power toggle (applies to all FX processing regardless of device slot).
+    var fxGlobalEnabled: Bool = true
 
     // Software volume/mute keyed by device UID — @Observable so the UI re-renders on change.
     // This is the single source of truth for display; DeviceVolumeMonitor.softwareVolumes
@@ -265,8 +267,9 @@ final class AudioEngine {
             // Seed fxSettings / fxEditingUID / fxSettingsForEditing from persisted values
             let savedEditingUID = manager.getFXEditingUID()
             fxEditingUID = savedEditingUID
-            fxSettings = manager.getFXSettings(for: savedEditingUID)
-            fxSettingsForEditing = manager.getFXSettings(for: savedEditingUID)
+            fxGlobalEnabled = manager.isFXGlobalEnabled()
+            fxSettings = normalizedFXSettings(manager.getFXSettings(for: savedEditingUID))
+            fxSettingsForEditing = normalizedFXSettings(manager.getFXSettings(for: savedEditingUID))
 
             processMonitor.onAppsChanged = { [weak self] _ in
                 self?.cleanupStaleTaps()
@@ -303,6 +306,9 @@ final class AudioEngine {
             }
 
             applyPersistedSettings()
+            // Re-apply FX immediately after seeding taps so that system-FX is
+            // pushed to every tap now that defaultDeviceUID is definitely known.
+            applyFXToAllTaps()
             registerNewDevicesInPriority()
             lastKnownDefaultDeviceUID = deviceVolumeMonitor.defaultDeviceUID
             lastKnownDefaultInputDeviceUID = deviceVolumeMonitor.defaultInputDeviceUID
@@ -527,7 +533,7 @@ final class AudioEngine {
     func setVolume(for app: AudioApp, to volume: Float) {
         volumeState.setVolume(for: app.id, to: volume, identifier: app.persistenceIdentifier)
         if let deviceUID = appDeviceRouting[app.id] {
-            ensureTapExists(for: app, deviceUID: deviceUID)
+            ensureTapExists(for: app, deviceUID: deviceUID, useStreamSpecificTap: followsDefault.contains(app.id))
         }
         taps[app.id]?.volume = volume
     }
@@ -556,18 +562,27 @@ final class AudioEngine {
     /// Stored (not computed) so @Observable reliably tracks changes.
     var fxSettingsForEditing: FXSettings = FXSettings()
 
+    /// Per-device power is no longer used; normalize all persisted slots to enabled and
+    /// use the global FX power toggle as the single source of on/off state.
+    private func normalizedFXSettings(_ settings: FXSettings) -> FXSettings {
+        var normalized = settings
+        normalized.isEnabled = true
+        return normalized
+    }
+
     /// Save edited FX settings for the current editing target and re-apply to matching taps.
     /// In multi mode, writes to all selected device UIDs simultaneously.
     func setFXSettings(_ settings: FXSettings) {
-        fxSettings = settings   // keep observable var in sync for spectrum view
-        fxSettingsForEditing = settings  // keep FX panel state in sync when returning to tab
+        let normalized = normalizedFXSettings(settings)
+        fxSettings = normalized   // keep observable var in sync for spectrum view
+        fxSettingsForEditing = normalized  // keep FX panel state in sync when returning to tab
         if fxDeviceMode == .multi {
             // Apply the same settings to every selected device
             for uid in fxSelectedDeviceUIDs {
-                settingsManager.setFXSettings(settings, for: uid)
+                settingsManager.setFXSettings(normalized, for: uid)
             }
         } else {
-            settingsManager.setFXSettings(settings, for: fxEditingUID)
+            settingsManager.setFXSettings(normalized, for: fxEditingUID)
         }
         applyFXToAllTaps()
     }
@@ -597,13 +612,16 @@ final class AudioEngine {
                 break
             }
         }
-
-        switch (systemFX, deviceFX) {
-        case let (sys?, dev?): return sys.stacked(with: dev)  // both layers
-        case let (sys?, nil): return sys                        // system only
-        case let (nil, dev?): return dev                        // device only
-        case (nil, nil):      return FXSettings()              // passthrough
+        let stacked: FXSettings
+        switch (systemFX.map(normalizedFXSettings), deviceFX.map(normalizedFXSettings)) {
+        case let (sys?, dev?): stacked = sys.stacked(with: dev)   // both layers
+        case let (sys?, nil):  stacked = sys                       // system only
+        case let (nil, dev?):  stacked = dev                       // device only
+        case (nil, nil):       stacked = FXSettings()              // passthrough
         }
+        var result = stacked
+        result.isEnabled = result.isEnabled && fxGlobalEnabled
+        return result
     }
 
     // MARK: - FX Device Routing
@@ -618,10 +636,13 @@ final class AudioEngine {
         settingsManager.setFXEditingUID(uid)
         settingsManager.setFXDeviceUID(uid)
         settingsManager.setFXDeviceMode(.single)
-        let s = settingsManager.getFXSettings(for: uid)
+        let s = normalizedFXSettings(settingsManager.getFXSettings(for: uid))
         fxEditingUID = uid
         fxSettings = s
         fxSettingsForEditing = s
+        // Push the correct per-device + system layers to every tap now that the
+        // editing target (and therefore the active device slot) has changed.
+        applyFXToAllTaps()
     }
 
     /// Switch back to System Audio editing and routing.
@@ -629,10 +650,13 @@ final class AudioEngine {
         settingsManager.setFXEditingUID(nil)
         settingsManager.setFXDeviceUID(nil)
         settingsManager.setFXDeviceMode(.single)
-        let s = settingsManager.getFXSettings(for: nil)
+        let s = normalizedFXSettings(settingsManager.getFXSettings(for: nil))
         fxEditingUID = nil
         fxSettings = s
         fxSettingsForEditing = s
+        // Re-apply so the system-layer is correctly assigned to the default-device
+        // tap after the routing mode switches back to follow-default.
+        applyFXToAllTaps()
     }
 
     /// Switch to multi-device mode.
@@ -646,6 +670,34 @@ final class AudioEngine {
     /// Update selected device UIDs in multi mode.
     func setFXSelectedDeviceUIDs(_ uids: Set<String>) {
         settingsManager.setFXSelectedDeviceUIDs(uids)
+        applyFXToAllTaps()
+    }
+
+    /// Returns true when global FX power is enabled.
+    func isFXEnabled() -> Bool {
+        fxGlobalEnabled
+    }
+
+    /// Toggles global FX power for all devices and immediately reapplies taps.
+    func setFXEnabled(_ enabled: Bool) {
+        fxGlobalEnabled = enabled
+        settingsManager.setFXGlobalEnabled(enabled)
+        applyFXToAllTaps()
+    }
+
+    /// Returns true when this device's FX slot is at the "no real FX" default preset.
+    func isFXAtDefaultPreset(forDeviceUID uid: String) -> Bool {
+        settingsManager.getFXSettings(for: uid) == FXPreset.defaultPreset.settings
+    }
+
+    /// Resets a device's FX slot to the default preset and reapplies active taps.
+    func resetFXForDevice(_ uid: String) {
+        let reset = FXPreset.defaultPreset.settings
+        settingsManager.setFXSettings(reset, for: uid)
+        if fxEditingUID == uid {
+            fxSettings = reset
+            fxSettingsForEditing = reset
+        }
         applyFXToAllTaps()
     }
 
@@ -730,9 +782,13 @@ final class AudioEngine {
             appDeviceRouting[app.id] = defaultUID
         }
 
-        // Switch tap if needed
+        // Switch tap if needed.
+        // Explicitly-routed apps (deviceUID != nil) MUST use stereo mixdown taps —
+        // stream-specific taps are tied to a device stream and break when the system
+        // default changes. Only follow-default apps can safely use stream-specific taps.
         guard let targetUID = appDeviceRouting[app.id] else { return }
-        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: [targetUID])
+        let isExplicit = deviceUID != nil
+        let preferredTapSourceUID = isExplicit ? nil : preferredTapSourceDeviceUID(forOutputUIDs: [targetUID])
         if let tap = taps[app.id] {
             Task {
                 do {
@@ -751,7 +807,7 @@ final class AudioEngine {
                 }
             }
         } else {
-            ensureTapExists(for: app, deviceUID: targetUID)
+            ensureTapExists(for: app, deviceUID: targetUID, useStreamSpecificTap: !isExplicit)
         }
     }
 
@@ -960,8 +1016,10 @@ final class AudioEngine {
             }
             appDeviceRouting[app.id] = deviceUID
 
-            // Always create tap for audio apps (always-on strategy)
-            ensureTapExists(for: app, deviceUID: deviceUID)
+            // Always create tap for audio apps (always-on strategy).
+            // Explicitly-routed apps use stereo mixdown so they survive default-device changes.
+            let isFollowing = followsDefault.contains(app.id)
+            ensureTapExists(for: app, deviceUID: deviceUID, useStreamSpecificTap: isFollowing)
 
             // Only mark as applied if tap was successfully created
             // This allows retry on next applyPersistedSettings() call if tap failed
@@ -981,10 +1039,18 @@ final class AudioEngine {
         }
     }
 
-    private func ensureTapExists(for app: AudioApp, deviceUID: String) {
+    /// Creates a tap for the given app if one doesn't already exist.
+    /// - Parameter useStreamSpecificTap: When `true`, uses a device-stream-specific tap
+    ///   for better multichannel preservation (only safe for apps following the default
+    ///   device, because stream-specific taps break when the default changes).
+    ///   When `false`, forces a stereo mixdown tap that works regardless of which
+    ///   device is the system default — required for explicitly-routed apps.
+    private func ensureTapExists(for app: AudioApp, deviceUID: String, useStreamSpecificTap: Bool = true) {
         guard taps[app.id] == nil else { return }
 
-        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID])
+        let preferredTapSourceUID = useStreamSpecificTap
+            ? preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID])
+            : nil
         let tap = ProcessTapController(
             app: app,
             targetDeviceUID: deviceUID,

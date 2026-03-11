@@ -17,10 +17,12 @@ struct DeviceRow: View {
     let onMuteToggle: () -> Void
     let onSoftwareVolumeChange: (Float) -> Void
     let onSoftwareMuteToggle: () -> Void
+    let trailingAccessoryPadding: CGFloat
 
     @State private var sliderValue: Double
     @State private var softwareSliderValue: Double
     @State private var isEditing = false
+    @Environment(ThemeManager.self) private var theme
 
     /// Show muted icon when system muted OR volume is 0
     private var showMutedIcon: Bool { isMuted || sliderValue == 0 }
@@ -42,7 +44,8 @@ struct DeviceRow: View {
         onVolumeChange: @escaping (Float) -> Void,
         onMuteToggle: @escaping () -> Void,
         onSoftwareVolumeChange: @escaping (Float) -> Void = { _ in },
-        onSoftwareMuteToggle: @escaping () -> Void = {}
+        onSoftwareMuteToggle: @escaping () -> Void = {},
+        trailingAccessoryPadding: CGFloat = 0
     ) {
         self.device = device
         self.isDefault = isDefault
@@ -56,6 +59,7 @@ struct DeviceRow: View {
         self.onMuteToggle = onMuteToggle
         self.onSoftwareVolumeChange = onSoftwareVolumeChange
         self.onSoftwareMuteToggle = onSoftwareMuteToggle
+        self.trailingAccessoryPadding = trailingAccessoryPadding
         self._sliderValue = State(initialValue: Double(volume))
         self._softwareSliderValue = State(initialValue: Double(softwareVolume))
     }
@@ -173,6 +177,7 @@ struct DeviceRow: View {
                 )
             }
         }
+        .padding(.trailing, trailingAccessoryPadding)
         .frame(height: DesignTokens.Dimensions.rowContentHeight)
         .hoverableRow()
         .onAppear {

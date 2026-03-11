@@ -45,7 +45,7 @@ struct LiquidGlassSlider: View {
 
                     // Filled track — reads from ThemeManager, not static DesignTokens
                     Capsule()
-                        .fill(theme.accentColor)
+                        .fill(theme.primaryColor)
                         .frame(width: max(trackHeight, geo.size.width * normalizedValue),
                                height: trackHeight)
                 }

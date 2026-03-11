@@ -185,20 +185,28 @@ final class ThemeManager {
     /// Hi-contrast → neutral grey (matches system separator tone).
     /// Lo-contrast → primary hue at low-medium opacity so it's visibly tinted but subtle.
     var separatorAccentColor: Color {
-        let base = useCustomAccent
-            ? Color(hue: accentHue, saturation: accentSat, brightness: accentBri)
-            : accentColor
-        let opacity = isHiContrast ? (isDarkMode ? 0.22 : 0.18) : 0.35
-        return base.opacity(opacity)
+        if isHiContrast {
+            return isDarkMode
+                ? Color.white.opacity(0.22)
+                : Color.black.opacity(0.18)
+        } else {
+            let base = useCustomAccent
+                ? Color(hue: accentHue, saturation: accentSat, brightness: accentBri)
+                : accentColor
+            return base.opacity(0.35)
+        }
     }
 
     /// Section header text (e.g. "APPS") — stronger than separator lines for readability.
     var sectionHeaderColor: Color {
-        let base = useCustomAccent
-            ? Color(hue: accentHue, saturation: accentSat, brightness: accentBri)
-            : accentColor
-        let opacity = isHiContrast ? (isDarkMode ? 0.55 : 0.45) : 0.55
-        return base.opacity(opacity)
+        if isHiContrast {
+            return separatorAccentColor
+        } else {
+            let base = useCustomAccent
+                ? Color(hue: accentHue, saturation: accentSat, brightness: accentBri)
+                : accentColor
+            return base.opacity(0.55)
+        }
     }
 
     // MARK: - Derived: cell tint (what cells actually render on top of their material)

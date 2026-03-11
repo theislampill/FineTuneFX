@@ -29,8 +29,12 @@ struct FXSettings: Codable, Equatable {
     /// Returns a new FXSettings that stacks `other` on top of `self`.
     /// Parameters are summed with no upper cap — the caller intends to layer both.
     /// EQ freqs come from self (per-device freqs take priority over system freqs).
+    ///
+    /// `isEnabled` is the logical AND of both layers: if either layer's power
+    /// switch is off the combined result is bypassed in the DSP.
     func stacked(with other: FXSettings) -> FXSettings {
         var result = self
+        result.isEnabled     = isEnabled && other.isEnabled
         result.clarity       = clarity       + other.clarity
         result.ambience      = ambience      + other.ambience
         result.surroundSound = surroundSound + other.surroundSound
