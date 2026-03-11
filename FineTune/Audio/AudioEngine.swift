@@ -482,9 +482,7 @@ final class AudioEngine {
         let tapList = Array(taps.values)
         var result = Array(repeating: Float(0), count: count)
         for tap in tapList {
-            // Take a local copy — bandLevels is written from the render thread;
-            // the copy is safe as long as we re-check count after capture.
-            let bands = tap.spectrumAnalyzer.bandLevels
+            let bands = tap.spectrumAnalyzer.snapshotBandLevels()
             guard bands.count == count else { continue }
             for i in 0..<count { result[i] = max(result[i], bands[i]) }
         }
@@ -805,6 +803,12 @@ final class AudioEngine {
                     self.logger.debug("Switched \(app.name) to device: \(targetUID)")
                 } catch {
                     self.logger.error("Failed to switch device for \(app.name): \(error.localizedDescription)")
+                    self.rebuildTap(
+                        for: app,
+                        targetUIDs: [targetUID],
+                        useStreamSpecificTap: !isExplicit,
+                        reason: "setDevice switch failure"
+                    )
                 }
             }
         } else {
@@ -865,14 +869,20 @@ final class AudioEngine {
         let mode = getDeviceSelectionMode(for: app)
 
         let deviceUIDs: [String]
+        let useStreamSpecificTap: Bool
         switch mode {
         case .single:
             if isFollowingDefault(for: app), let defaultUID = deviceVolumeMonitor.defaultDeviceUID {
                 deviceUIDs = [defaultUID]
+                useStreamSpecificTap = true
             } else if let deviceUID = appDeviceRouting[app.id] {
                 deviceUIDs = [deviceUID]
+                // Explicit single-device routes must remain mixdown-based so they do
+                // not get pinned to default-device stream taps.
+                useStreamSpecificTap = false
             } else if let defaultUID = deviceVolumeMonitor.defaultDeviceUID {
                 deviceUIDs = [defaultUID]
+                useStreamSpecificTap = true
             } else {
                 logger.warning("No device available for \(app.name) in single mode")
                 return
@@ -884,6 +894,7 @@ final class AudioEngine {
                 return
             }
             deviceUIDs = selectedUIDs
+            useStreamSpecificTap = true
         }
 
         // Update or create tap with the device set
@@ -891,7 +902,9 @@ final class AudioEngine {
             // Tap exists - update devices
             if tap.currentDeviceUIDs != deviceUIDs {
                 do {
-                    let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs)
+                    let preferredTapSourceUID = useStreamSpecificTap
+                        ? preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs)
+                        : nil
                     try await tap.updateDevices(to: deviceUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID)
                     tap.volume = volumeState.getVolume(for: app.id)
                     tap.isMuted = volumeState.getMute(for: app.id)
@@ -904,20 +917,32 @@ final class AudioEngine {
                     logger.debug("Updated \(app.name) to \(deviceUIDs.count) device(s)")
                 } catch {
                     logger.error("Failed to update devices for \(app.name): \(error.localizedDescription)")
+                    rebuildTap(
+                        for: app,
+                        targetUIDs: deviceUIDs,
+                        useStreamSpecificTap: useStreamSpecificTap,
+                        reason: "updateTapForCurrentMode switch failure"
+                    )
                 }
             }
         } else {
             // No tap exists - create one
-            ensureTapWithDevices(for: app, deviceUIDs: deviceUIDs)
+            if let single = deviceUIDs.first, deviceUIDs.count == 1 {
+                ensureTapExists(for: app, deviceUID: single, useStreamSpecificTap: useStreamSpecificTap)
+            } else {
+                ensureTapWithDevices(for: app, deviceUIDs: deviceUIDs, useStreamSpecificTap: useStreamSpecificTap)
+            }
         }
     }
 
     /// Creates a tap with the specified device UIDs
-    private func ensureTapWithDevices(for app: AudioApp, deviceUIDs: [String]) {
+    private func ensureTapWithDevices(for app: AudioApp, deviceUIDs: [String], useStreamSpecificTap: Bool = true) {
         guard !deviceUIDs.isEmpty else { return }
         guard taps[app.id] == nil else { return }
 
-        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs)
+        let preferredTapSourceUID = useStreamSpecificTap
+            ? preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs)
+            : nil
         let tap = ProcessTapController(
             app: app,
             targetDeviceUIDs: deviceUIDs,
@@ -1155,6 +1180,12 @@ final class AudioEngine {
                     }
                 } catch {
                     self.logger.error("Failed to switch \(app.name) to \(targetUID): \(error.localizedDescription)")
+                    self.rebuildTap(
+                        for: app,
+                        targetUIDs: [targetUID],
+                        useStreamSpecificTap: true,
+                        reason: "routeFollowsDefaultApps switch failure"
+                    )
                 }
             }
         }
@@ -1231,6 +1262,12 @@ final class AudioEngine {
                         tap.isMuted = self.volumeState.getMute(for: tap.app.id)
                     } catch {
                         self.logger.error("Failed to switch \(tap.app.name) to fallback: \(error.localizedDescription)")
+                        self.rebuildTap(
+                            for: tap.app,
+                            targetUIDs: [fallbackUID],
+                            useStreamSpecificTap: true,
+                            reason: "handleDeviceDisconnected single fallback"
+                        )
                     }
                 }
 
@@ -1244,6 +1281,12 @@ final class AudioEngine {
                         self.logger.debug("Removed \(deviceName) from \(tap.app.name) multi-device output")
                     } catch {
                         self.logger.error("Failed to update \(tap.app.name) devices: \(error.localizedDescription)")
+                        self.rebuildTap(
+                            for: tap.app,
+                            targetUIDs: remainingUIDs,
+                            useStreamSpecificTap: true,
+                            reason: "handleDeviceDisconnected multi fallback"
+                        )
                     }
                 }
             }
@@ -1310,8 +1353,9 @@ final class AudioEngine {
             Task {
                 for tap in tapsToSwitch {
                     do {
-                        let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID])
-                        try await tap.switchDevice(to: deviceUID, preferredTapSourceDeviceUID: preferredTapSourceUID)
+                        // Explicitly-pinned apps must always use mixdown taps so they
+                        // don't become tied to whichever device is currently default.
+                        try await tap.switchDevice(to: deviceUID, preferredTapSourceDeviceUID: nil)
                         tap.volume = self.volumeState.getVolume(for: tap.app.id)
                         tap.isMuted = self.volumeState.getMute(for: tap.app.id)
                         if let device = self.deviceMonitor.device(for: deviceUID) {
@@ -1320,6 +1364,12 @@ final class AudioEngine {
                         }
                     } catch {
                         self.logger.error("Failed to switch \(tap.app.name) back to \(deviceName): \(error.localizedDescription)")
+                        self.rebuildTap(
+                            for: tap.app,
+                            targetUIDs: [deviceUID],
+                            useStreamSpecificTap: false,
+                            reason: "handleDeviceConnected explicit restore"
+                        )
                     }
                 }
             }
@@ -1565,8 +1615,44 @@ final class AudioEngine {
                     self.logger.debug("Repaired explicit routing for \(app.name) -> \(targetUID)")
                 } catch {
                     self.logger.error("Failed to repair explicit routing for \(app.name): \(error.localizedDescription)")
+                    self.rebuildTap(
+                        for: app,
+                        targetUIDs: [targetUID],
+                        useStreamSpecificTap: false,
+                        reason: "enforceExplicitSingleDeviceRouting repair"
+                    )
                 }
             }
+        }
+    }
+
+    /// Last-resort recovery when a tap device switch/update fails.
+    /// Recreates the tap from scratch with the requested routing so UI state and
+    /// actual audio output do not diverge.
+    private func rebuildTap(
+        for app: AudioApp,
+        targetUIDs: [String],
+        useStreamSpecificTap: Bool,
+        reason: String
+    ) {
+        guard !targetUIDs.isEmpty else { return }
+
+        if let oldTap = taps.removeValue(forKey: app.id) {
+            oldTap.invalidate()
+        }
+
+        if let single = targetUIDs.first, targetUIDs.count == 1 {
+            ensureTapExists(for: app, deviceUID: single, useStreamSpecificTap: useStreamSpecificTap)
+            appDeviceRouting[app.id] = single
+        } else {
+            ensureTapWithDevices(for: app, deviceUIDs: targetUIDs, useStreamSpecificTap: useStreamSpecificTap)
+            appDeviceRouting[app.id] = targetUIDs[0]
+        }
+
+        if taps[app.id] != nil {
+            logger.info("Rebuilt tap for \(app.name) (\(reason, privacy: .public))")
+        } else {
+            logger.error("Failed to rebuild tap for \(app.name) (\(reason, privacy: .public))")
         }
     }
 

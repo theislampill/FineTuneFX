@@ -697,7 +697,8 @@ final class ProcessTapController {
             let rampTimeSeconds: Float = 0.030
             rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * rampTimeSeconds))
             eqProcessor?.updateSampleRate(deviceSampleRate)
-                fxProcessor?.updateSampleRate(deviceSampleRate)
+            fxProcessor?.updateSampleRate(deviceSampleRate)
+            _storedSampleRate = Float(deviceSampleRate)
         }
 
         _primaryCurrentVolume = _secondaryCurrentVolume
@@ -806,7 +807,8 @@ final class ProcessTapController {
         if let deviceSampleRate = try? primaryResources.aggregateDeviceID.readNominalSampleRate() {
             rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * 0.030))
             eqProcessor?.updateSampleRate(deviceSampleRate)
-                fxProcessor?.updateSampleRate(deviceSampleRate)
+            fxProcessor?.updateSampleRate(deviceSampleRate)
+            _storedSampleRate = Float(deviceSampleRate)
         }
     }
 
@@ -952,6 +954,82 @@ final class ProcessTapController {
         }
     }
 
+    @inline(__always)
+    private func updateSpectrumFromMappedBuffers(
+        inputBuffers: UnsafeMutableAudioBufferListPointer,
+        outputBuffers: UnsafeMutableAudioBufferListPointer
+    ) {
+        let inputBufferCount = inputBuffers.count
+        let outputBufferCount = outputBuffers.count
+        guard inputBufferCount > 0, outputBufferCount > 0 else {
+            spectrumAnalyzer.reset()
+            return
+        }
+
+        let mappedStart = inputBufferCount > outputBufferCount
+            ? (inputBufferCount - outputBufferCount)
+            : 0
+        let mappedCount = min(inputBufferCount - mappedStart, outputBufferCount)
+        guard mappedCount > 0 else {
+            spectrumAnalyzer.reset()
+            return
+        }
+
+        var bestIndex: Int = -1
+        var bestPeak: Float = 0
+        var fallbackIndex: Int = -1
+
+        for offset in 0..<mappedCount {
+            let idx = mappedStart + offset
+            let inputBuffer = inputBuffers[idx]
+            guard let inputData = inputBuffer.mData else { continue }
+
+            let channels = max(1, Int(inputBuffer.mNumberChannels))
+            let sampleCount = Int(inputBuffer.mDataByteSize) / MemoryLayout<Float>.size
+            let frameCount = sampleCount / channels
+            guard frameCount > 0 else { continue }
+            if fallbackIndex == -1 { fallbackIndex = idx }
+
+            let inputSamples = inputData.assumingMemoryBound(to: Float.self)
+            var localPeak: Float = 0
+            for i in stride(from: 0, to: sampleCount, by: channels) {
+                let v = abs(inputSamples[i])
+                if v > localPeak { localPeak = v }
+            }
+            if localPeak >= bestPeak {
+                bestPeak = localPeak
+                bestIndex = idx
+            }
+        }
+
+        let sourceIndex = bestIndex >= 0 ? bestIndex : fallbackIndex
+        guard sourceIndex >= 0 else {
+            spectrumAnalyzer.reset()
+            return
+        }
+
+        let sourceBuffer = inputBuffers[sourceIndex]
+        guard let sourceData = sourceBuffer.mData else {
+            spectrumAnalyzer.reset()
+            return
+        }
+        let sourceChannels = max(1, Int(sourceBuffer.mNumberChannels))
+        let sourceSampleCount = Int(sourceBuffer.mDataByteSize) / MemoryLayout<Float>.size
+        let sourceFrameCount = sourceSampleCount / sourceChannels
+        guard sourceFrameCount > 0 else {
+            spectrumAnalyzer.reset()
+            return
+        }
+
+        let sourceSamples = sourceData.assumingMemoryBound(to: Float.self)
+        spectrumAnalyzer.processBlock(
+            sourceSamples,
+            frameCount: sourceFrameCount,
+            channelCount: sourceChannels,
+            sampleRate: _storedSampleRate
+        )
+    }
+
     // MARK: - RT-Safe Audio Callbacks (DO NOT MODIFY WITHOUT RT-SAFETY REVIEW)
     // These callbacks run on CoreAudio's real-time HAL I/O thread.
     // See .claude/rules/rt-safety.md for constraints.
@@ -998,13 +1076,7 @@ final class ProcessTapController {
         let rawPeak = min(maxPeak, 1.0)
         _peakLevel = _peakLevel + levelSmoothingFactor * (rawPeak - _peakLevel)
 
-        // Feed raw samples to the per-band spectrum analyser
-        if let firstBuf = inputBuffers.first, let data = firstBuf.mData {
-            let samples = data.assumingMemoryBound(to: Float.self)
-            let frameCount = Int(firstBuf.mDataByteSize) / MemoryLayout<Float>.size / 2
-            spectrumAnalyzer.processBlock(samples, frameCount: frameCount,
-                                          channelCount: 2, sampleRate: _storedSampleRate)
-        }
+        updateSpectrumFromMappedBuffers(inputBuffers: inputBuffers, outputBuffers: outputBuffers)
 
         if _isMuted {
             for outputBuffer in outputBuffers {
@@ -1022,7 +1094,6 @@ final class ProcessTapController {
         // CrossfadeState.primaryMultiplier handles all phase logic including the race condition
         // guard (returns 0.0 when progress >= 1.0 in idle phase after crossfade completes).
         let crossfadeMultiplier = crossfadeState.primaryMultiplier
-
         let inputBufferCount = inputBuffers.count
         let outputBufferCount = outputBuffers.count
 
@@ -1143,6 +1214,10 @@ final class ProcessTapController {
         }
         let rawPeak = min(maxPeak, 1.0)
         _secondaryPeakLevel = _secondaryPeakLevel + levelSmoothingFactor * (rawPeak - _secondaryPeakLevel)
+        if !crossfadeState.isActive {
+            _peakLevel = _peakLevel + levelSmoothingFactor * (rawPeak - _peakLevel)
+            updateSpectrumFromMappedBuffers(inputBuffers: inputBuffers, outputBuffers: outputBuffers)
+        }
 
         // Update crossfade progress via state machine (handles sample counting + phase logic)
         _ = crossfadeState.updateProgress(samples: totalSamplesThisBuffer)

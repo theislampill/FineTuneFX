@@ -9,7 +9,8 @@
 // Output levels are in 0…1 with an empirical ceiling of SPECTRUM_MAX_OUTPUT_VALUE.
 //
 // Call processBlock() from the audio render callback (any thread).
-// Read bandLevels[] from any thread — Float reads are atomic on arm64/x86_64.
+// Read snapshotBandLevels() from any thread. We intentionally avoid exposing a
+// mutable Array across threads, because concurrent Array read/write can trap.
 
 import Foundation
 
@@ -31,8 +32,14 @@ final class SpectrumBandAnalyzer {
 
     static let bandCount = 10
 
-    // Written from render thread; Float is atomic on arm64/x86_64.
-    private(set) var bandLevels: [Float] = Array(repeating: 0, count: bandCount)
+    /// Published levels read by UI thread.
+    /// Kept as fixed fields (not Array) so render thread writes and UI reads do
+    /// not race through Swift Array storage/exclusivity.
+    private struct PublishedBands {
+        var b0: Float = 0; var b1: Float = 0; var b2: Float = 0; var b3: Float = 0; var b4: Float = 0
+        var b5: Float = 0; var b6: Float = 0; var b7: Float = 0; var b8: Float = 0; var b9: Float = 0
+    }
+    private var publishedBands = PublishedBands()
 
     // Filter states — only accessed from the render callback
     private var filters: [BandFilter]
@@ -98,10 +105,17 @@ final class SpectrumBandAnalyzer {
             }
         }
 
-        // Publish levels
-        for b in 0..<SpectrumBandAnalyzer.bandCount {
-            bandLevels[b] = filters[b].level
-        }
+        // Publish levels without mutating shared Array storage.
+        publishedBands.b0 = filters[0].level
+        publishedBands.b1 = filters[1].level
+        publishedBands.b2 = filters[2].level
+        publishedBands.b3 = filters[3].level
+        publishedBands.b4 = filters[4].level
+        publishedBands.b5 = filters[5].level
+        publishedBands.b6 = filters[6].level
+        publishedBands.b7 = filters[7].level
+        publishedBands.b8 = filters[8].level
+        publishedBands.b9 = filters[9].level
     }
 
     func reset() {
@@ -110,9 +124,14 @@ final class SpectrumBandAnalyzer {
             filters[b].squaredFiltered = 0; filters[b].level = 0
         }
         in1 = 0; in2 = 0
-        for b in 0..<SpectrumBandAnalyzer.bandCount {
-            bandLevels[b] = 0
-        }
+        publishedBands = PublishedBands()
+    }
+
+    /// Thread-safe snapshot for UI/engine reads.
+    func snapshotBandLevels() -> [Float] {
+        let bands = publishedBands
+        return [bands.b0, bands.b1, bands.b2, bands.b3, bands.b4,
+                bands.b5, bands.b6, bands.b7, bands.b8, bands.b9]
     }
 
     // MARK: - Private

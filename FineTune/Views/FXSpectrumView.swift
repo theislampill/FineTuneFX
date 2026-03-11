@@ -63,6 +63,10 @@ final class SpectrumCoordinator {
 
     private var cr: CGFloat = 0; private var cg: CGFloat = 0; private var cb: CGFloat = 0
     private var enabled: Bool = true
+    private var wasEnabled: Bool = true
+    private var needsDisabledRefresh: Bool = false
+    private var disabledStepCounter: Int = 0
+    private static let disabledStepEveryFrames = 6   // ~1s crawl-to-flat with 10-history bars @30fps
     // Prevents rendering with default colours before the theme colour is pushed
     private var isConfigured: Bool = false
 
@@ -74,6 +78,9 @@ final class SpectrumCoordinator {
 
     func configure(r: CGFloat, g: CGFloat, b: CGFloat, enabled: Bool) {
         isConfigured = true
+        if !enabled {
+            needsDisabledRefresh = true
+        }
         cr = r; cg = g; cb = b; self.enabled = enabled
     }
 
@@ -111,14 +118,46 @@ final class SpectrumCoordinator {
         frameSkip.toggle()
         guard !frameSkip else { return }   // ~30 fps
 
+        if !enabled {
+            if wasEnabled {
+                wasEnabled = false
+                disabledStepCounter = 0
+                needsDisabledRefresh = true  // switch to grayscale immediately
+            }
+
+            disabledStepCounter += 1
+            if disabledStepCounter >= Self.disabledStepEveryFrames {
+                disabledStepCounter = 0
+                pushHistoryZeros()
+                needsDisabledRefresh = true
+            }
+
+            if needsDisabledRefresh {
+                view?.refresh(bandGraph: bandGraph, r: cr, g: cg, b: cb, enabled: false)
+                needsDisabledRefresh = false
+            }
+            return
+        }
+        wasEnabled = true
+        disabledStepCounter = 0
+
         guard let eng = engine else { return }
         let rawBands = eng.spectrumBandLevels   // [Float] × 10
 
+        // FxSound scrolling-history update:
+        // shift each half outward and insert newest sample at center.
+        pushHistory(rawBands: rawBands)
+
+        let snap = bandGraph
+        let r = cr; let g = cg; let b = cb
+        let en = enabled
+        view?.refresh(bandGraph: snap, r: r, g: g, b: b, enabled: en)
+    }
+
+    private func pushHistory(rawBands: [Float]) {
         let N = Self.barsPerBand
         let half = N / 2
 
-        // FxSound scrolling-history update:
-        // shift each half outward and insert newest sample at center.
         for band in 0..<Self.numBands {
             let base = band * N
             let inVal = band < rawBands.count ? rawBands[band] : 0
@@ -136,11 +175,10 @@ final class SpectrumCoordinator {
             }
             bandGraph[base + half] = newVal
         }
+    }
 
-        let snap = bandGraph
-        let r = cr; let g = cg; let b = cb
-        let en = enabled
-        view?.refresh(bandGraph: snap, r: r, g: g, b: b, enabled: en)
+    private func pushHistoryZeros() {
+        pushHistory(rawBands: Array(repeating: 0, count: Self.numBands))
     }
 }
 
@@ -188,7 +226,10 @@ final class SpectrumNSView: NSView {
         let midCol = base.withAlphaComponent(0.45).cgColor
 
         for i in 0..<n {
-            let raw = bandGraph[i] == 0 ? 0.01 : bandGraph[i]
+            let rawSource = bandGraph[i]
+            // Keep slight floor-lift only while FX is enabled; when disabled we must
+            // allow bars to decay fully to flat as zero-history propagates.
+            let raw = (enabled && rawSource == 0) ? 0.01 : rawSource
             // Livelier at low levels, but with soft-knee compression so peaks
             // don't pin at full height constantly.
             let floor: CGFloat = 0.002
@@ -197,7 +238,8 @@ final class SpectrumNSView: NSView {
             let driven = min(1.0, level * 4.6)
             let lifted = pow(driven, 0.43)
             let boosted = min(1.0, 1.0 - exp(-8.2 * lifted))
-            let halfH   = max(2.0, boosted * midY * 0.93)
+            let minHalfH: CGFloat = enabled ? 2.0 : 0.7
+            let halfH = max(minHalfH, boosted * midY * 0.93)
             let x     = CGFloat(i) * (barW + gap)
             let rect  = CGRect(x: x, y: midY - halfH, width: barW, height: halfH * 2)
 
