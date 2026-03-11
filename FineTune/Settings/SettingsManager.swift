@@ -174,7 +174,7 @@ final class SettingsManager {
 
     /// Get FX settings for a specific device UID, or System Audio if uid is nil.
     func getFXSettings(for uid: String? = nil) -> FXSettings {
-        if let uid { return settings.fxSettingsPerDevice[uid] ?? settings.fxSettings }
+        if let uid { return settings.fxSettingsPerDevice[uid] ?? FXPreset.defaultPreset.settings }
         return settings.fxSettings
     }
 
