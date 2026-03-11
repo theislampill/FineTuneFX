@@ -1513,6 +1513,10 @@ final class AudioEngine {
                 }
             }
         }
+
+        // Safety net: if any explicitly-routed single-device app was moved by a default-device
+        // transition, force it back to its selected device.
+        enforceExplicitSingleDeviceRouting()
     }
 
     private func showDefaultChangedNotification(newDeviceName: String, affectedApps: [AudioApp]) {
@@ -1530,6 +1534,40 @@ final class AudioEngine {
         UNUserNotificationCenter.current().add(request) { [weak self] error in
             if let error {
                 self?.logger.error("Failed to show notification: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Reassert explicit single-device routing after default-device transitions.
+    /// This prevents explicitly-routed apps from drifting to the new default.
+    private func enforceExplicitSingleDeviceRouting() {
+        var repairs: [(app: AudioApp, tap: ProcessTapController, targetUID: String)] = []
+
+        for app in apps {
+            guard !followsDefault.contains(app.id) else { continue }
+            guard settingsManager.getDeviceSelectionMode(for: app.persistenceIdentifier) == .single else { continue }
+            guard let targetUID = appDeviceRouting[app.id], let tap = taps[app.id] else { continue }
+            guard deviceMonitor.device(for: targetUID) != nil else { continue }
+            guard tap.currentDeviceUID != targetUID else { continue }
+            repairs.append((app, tap, targetUID))
+        }
+
+        guard !repairs.isEmpty else { return }
+
+        Task {
+            for (app, tap, targetUID) in repairs {
+                do {
+                    try await tap.switchDevice(to: targetUID, preferredTapSourceDeviceUID: nil)
+                    tap.volume = self.volumeState.getVolume(for: app.id)
+                    tap.isMuted = self.volumeState.getMute(for: app.id)
+                    if let device = self.deviceMonitor.device(for: targetUID) {
+                        tap.currentDeviceVolume = self.deviceVolumeMonitor.volumes[device.id] ?? 1.0
+                        tap.isDeviceMuted = self.deviceVolumeMonitor.muteStates[device.id] ?? false
+                    }
+                    self.logger.debug("Repaired explicit routing for \(app.name) -> \(targetUID)")
+                } catch {
+                    self.logger.error("Failed to repair explicit routing for \(app.name): \(error.localizedDescription)")
+                }
             }
         }
     }
